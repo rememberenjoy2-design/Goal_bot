@@ -1,8 +1,8 @@
 import os
 import logging
-import feedparser  # Dynamic feed reader
+import feedparser
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from telegram.error import TelegramError
 
 # Enable logging
@@ -11,11 +11,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Retrieve configuration from environment variables
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID") 
-
-# Sky Sports Football RSS feed URL
 FOOTBALL_FEED_URL = "https://www.skysports.com/rss/12040" 
 
 async def is_user_subscribed(bot, user_id: int) -> bool:
@@ -39,8 +36,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if subscribed:
         await send_sports_menu(update, context)
     else:
+        # We clean the ID for the link (remove @ if present)
+        clean_channel_link = CHANNEL_ID.replace("@", "")
         keyboard = [
-            [InlineKeyboardButton("📢 Join Channel Here", url=f"https://t.me/{CHANNEL_ID.replace('@', '')}")],
+            [InlineKeyboardButton("📢 Join Channel Here", url=f"https://t.me/{clean_channel_link}")],
             [InlineKeyboardButton("✅ I Have Joined!", callback_data="check_subscription")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -69,8 +68,7 @@ async def check_subscription_callback(update: Update, context: ContextTypes.DEFA
 async def send_sports_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Shows the main sports menu options."""
     keyboard = [
-        [InlineKeyboardButton("🔥 Today's Football Trends", callback_data="get_trends")],
-        [InlineKeyboardButton("🔄 Refresh News", callback_data="get_trends")]
+        [InlineKeyboardButton("🔥 Today's Football Trends", callback_data="get_trends")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
@@ -82,8 +80,7 @@ async def send_sports_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 async def send_sports_menu_from_callback(query, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Helper to show the sports menu when transitioning from a button click."""
     keyboard = [
-        [InlineKeyboardButton("🔥 Today's Football Trends", callback_data="get_trends")],
-        [InlineKeyboardButton("🔄 Refresh News", callback_data="get_trends")]
+        [InlineKeyboardButton("🔥 Today's Football Trends", callback_data="get_trends")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.message.reply_text(
@@ -92,43 +89,71 @@ async def send_sports_menu_from_callback(query, context: ContextTypes.DEFAULT_TY
         parse_mode="Markdown"
     )
 
-async def handle_trends_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Fetches real football headlines from the RSS feed and displays them."""
-    query = update.callback_query
-    await query.answer("Fetching latest transfer news & trends...")
-    
+async def fetch_and_send_news(update_or_query, context: ContextTypes.DEFAULT_TYPE, is_callback=True) -> None:
+    """Helper to fetch RSS feed and format the trending news."""
     try:
-        # Parse the Sky Sports RSS feed
         feed = feedparser.parse(FOOTBALL_FEED_URL)
-        
-        # Check if we got any entries back
         if not feed.entries:
-            await query.edit_message_text("⚠️ No trending news found at the moment. Try again shortly!")
+            text = "⚠️ No trending news found at the moment. Try again shortly!"
+            if is_callback:
+                await update_or_query.edit_message_text(text)
+            else:
+                await update_or_query.reply_text(text)
             return
             
-        # Build our news response message (let's grab the top 5 articles)
         news_message = "🔥 **TRENDING FOOTBALL NEWS** 🔥\n\n"
-        
         for index, entry in enumerate(feed.entries[:5], start=1):
             title = entry.title
             link = entry.link
             news_message += f"{index}. [{title}]({link})\n\n"
             
-        # Add a call to action back to your channel!
         news_message += f"📢 *For live match discussions and more updates, head over to* {CHANNEL_ID}!"
         
-        # Add a back button to go back to the menu
         keyboard = [[InlineKeyboardButton("🔙 Back to Menu", callback_data="back_to_menu")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await query.edit_message_text(text=news_message, reply_markup=reply_markup, parse_mode="Markdown", disable_web_page_preview=True)
-        
+        if is_callback:
+            await update_or_query.edit_message_text(text=news_message, reply_markup=reply_markup, parse_mode="Markdown", disable_web_page_preview=True)
+        else:
+            await update_or_query.reply_text(text=news_message, reply_markup=reply_markup, parse_mode="Markdown", disable_web_page_preview=True)
+            
     except Exception as e:
         logger.error(f"Error fetching RSS feed: {e}")
-        await query.edit_message_text("❌ Oops! Something went wrong while loading the news. Please try again later.")
+        err_msg = "❌ Oops! Something went wrong while loading the news."
+        if is_callback:
+            await update_or_query.edit_message_text(err_msg)
+        else:
+            await update_or_query.reply_text(err_msg)
+
+async def handle_trends_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handles button click for trends."""
+    query = update.callback_query
+    await query.answer("Fetching latest transfer news & trends...")
+    await fetch_and_send_news(query, context, is_callback=True)
+
+async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handles user typed messages like 'Today's Football Trends' or 'news'."""
+    user_text = update.message.text.lower()
+    user_id = update.effective_user.id
+    
+    # Always check if they are joined first!
+    subscribed = await is_user_subscribed(context.bot, user_id)
+    if not subscribed:
+        # Redirect them to subscribe
+        await start(update, context)
+        return
+
+    # If subscribed and asking for news or trends, give it to them
+    if "trend" in user_text or "news" in user_text:
+        await fetch_and_send_news(update.message, context, is_callback=False)
+    else:
+        # Friendly response if they type anything else
+        await update.message.reply_text(
+            "⚽ I only speak football! Type **'news'** or click `/start` to access the main menu.",
+            parse_mode="Markdown"
+        )
 
 async def back_to_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Sends the user back to the main sports menu."""
     query = update.callback_query
     await query.answer()
     
@@ -144,24 +169,24 @@ async def back_to_menu_callback(update: Update, context: ContextTypes.DEFAULT_TY
     )
 
 def main():
-    """Start the bot."""
     if not TOKEN or not CHANNEL_ID:
         logger.error("Missing environment variables!")
         return
 
     app = Application.builder().token(TOKEN).build()
 
-    # Commands
+    # Handlers
     app.add_handler(CommandHandler("start", start))
-    
-    # Button Callbacks
     app.add_handler(CallbackQueryHandler(check_subscription_callback, pattern="^check_subscription$"))
     app.add_handler(CallbackQueryHandler(handle_trends_callback, pattern="^get_trends$"))
     app.add_handler(CallbackQueryHandler(back_to_menu_callback, pattern="^back_to_menu$"))
+    
+    # Plain text listener (captures user typing)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_messages))
 
-    # Start Polling
+    # Start Polling (drop pending updates prevents the bot from choking on old queued messages)
     logger.info("Bot is running...")
-    app.run_polling()
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
