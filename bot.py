@@ -17,26 +17,30 @@ FOOTBALL_FEED_URL = "https://www.skysports.com/rss/12040"
 
 async def is_user_subscribed(bot, user_id: int) -> bool:
     """Checks if a user is subscribed to the required channel."""
+    logger.info(f"Checking subscription for user {user_id} in channel {CHANNEL_ID}...")
     try:
         member = await bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
+        logger.info(f"Subscription status for {user_id}: {member.status}")
         if member.status in ["member", "administrator", "creator"]:
             return True
         return False
     except TelegramError as e:
-        logger.error(f"Error checking subscription: {e}")
+        logger.error(f"Failed to check subscription: {e}")
         return False
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Triggered when the user runs /start."""
     user = update.effective_user
-    user_id = user.id
+    logger.info(f"RECEIVED /start command from user: {user.first_name} (ID: {user.id})")
     
+    user_id = user.id
     subscribed = await is_user_subscribed(context.bot, user_id)
     
     if subscribed:
+        logger.info(f"User {user_id} is subscribed! Showing sports menu.")
         await send_sports_menu(update, context)
     else:
-        # We clean the ID for the link (remove @ if present)
+        logger.info(f"User {user_id} is NOT subscribed. Showing lock screen.")
         clean_channel_link = CHANNEL_ID.replace("@", "")
         keyboard = [
             [InlineKeyboardButton("📢 Join Channel Here", url=f"https://t.me/{clean_channel_link}")],
@@ -57,6 +61,7 @@ async def check_subscription_callback(update: Update, context: ContextTypes.DEFA
     await query.answer()
     
     user_id = query.from_user.id
+    logger.info(f"User {user_id} clicked 'I Have Joined' button.")
     subscribed = await is_user_subscribed(context.bot, user_id)
     
     if subscribed:
@@ -66,7 +71,6 @@ async def check_subscription_callback(update: Update, context: ContextTypes.DEFA
         await query.answer("❌ You haven't joined the channel yet. Please join first!", show_alert=True)
 
 async def send_sports_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Shows the main sports menu options."""
     keyboard = [
         [InlineKeyboardButton("🔥 Today's Football Trends", callback_data="get_trends")]
     ]
@@ -78,7 +82,6 @@ async def send_sports_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     )
 
 async def send_sports_menu_from_callback(query, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Helper to show the sports menu when transitioning from a button click."""
     keyboard = [
         [InlineKeyboardButton("🔥 Today's Football Trends", callback_data="get_trends")]
     ]
@@ -90,8 +93,8 @@ async def send_sports_menu_from_callback(query, context: ContextTypes.DEFAULT_TY
     )
 
 async def fetch_and_send_news(update_or_query, context: ContextTypes.DEFAULT_TYPE, is_callback=True) -> None:
-    """Helper to fetch RSS feed and format the trending news."""
     try:
+        logger.info("Fetching RSS feed headlines...")
         feed = feedparser.parse(FOOTBALL_FEED_URL)
         if not feed.entries:
             text = "⚠️ No trending news found at the moment. Try again shortly!"
@@ -126,28 +129,23 @@ async def fetch_and_send_news(update_or_query, context: ContextTypes.DEFAULT_TYP
             await update_or_query.reply_text(err_msg)
 
 async def handle_trends_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles button click for trends."""
     query = update.callback_query
     await query.answer("Fetching latest transfer news & trends...")
     await fetch_and_send_news(query, context, is_callback=True)
 
 async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles user typed messages like 'Today's Football Trends' or 'news'."""
     user_text = update.message.text.lower()
     user_id = update.effective_user.id
+    logger.info(f"Received text message: '{user_text}' from user {user_id}")
     
-    # Always check if they are joined first!
     subscribed = await is_user_subscribed(context.bot, user_id)
     if not subscribed:
-        # Redirect them to subscribe
         await start(update, context)
         return
 
-    # If subscribed and asking for news or trends, give it to them
     if "trend" in user_text or "news" in user_text:
         await fetch_and_send_news(update.message, context, is_callback=False)
     else:
-        # Friendly response if they type anything else
         await update.message.reply_text(
             "⚽ I only speak football! Type **'news'** or click `/start` to access the main menu.",
             parse_mode="Markdown"
@@ -181,10 +179,9 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_trends_callback, pattern="^get_trends$"))
     app.add_handler(CallbackQueryHandler(back_to_menu_callback, pattern="^back_to_menu$"))
     
-    # Plain text listener (captures user typing)
+    # Plain text listener
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_messages))
 
-    # Start Polling (drop pending updates prevents the bot from choking on old queued messages)
     logger.info("Bot is running...")
     app.run_polling(drop_pending_updates=True)
 
